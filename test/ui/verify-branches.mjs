@@ -15,34 +15,14 @@
 // `<option>` list of a controlled select. It writes test/ui/select-open.png.
 // DSH_GIT_UI_CHROME points at another Chrome binary when the default is missing.
 import { createServer } from "node:http";
-import { existsSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import { findChrome } from "./chrome.mjs";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const SHOT = join(ROOT, "test", "ui", "select-open.png");
-
-// A Chromium bundled with a Playwright install is an equally good target, and on
-// this machine there is no system-wide Chrome at the documented path. Discover it
-// by directory rather than pinning a version — the bundled revision changes with
-// every Playwright release.
-function findChrome() {
-  const explicit = process.env.DSH_GIT_UI_CHROME;
-  if (explicit !== undefined && explicit !== "") return explicit;
-  if (process.env.LOCALAPPDATA !== undefined) {
-    const cache = join(process.env.LOCALAPPDATA, "ms-playwright");
-    if (existsSync(cache)) {
-      const revisions = readdirSync(cache).filter((name) => name.startsWith("chromium-")).sort().reverse();
-      for (const revision of revisions) {
-        const candidate = join(cache, revision, "chrome-win64", "chrome.exe");
-        if (existsSync(candidate)) return candidate;
-      }
-    }
-  }
-  return "C:/Program Files/Google/Chrome/Application/chrome.exe";
-}
 const CHROME = findChrome();
 const TYPES = { ".js": "text/javascript", ".html": "text/html", ".json": "application/json" };
 

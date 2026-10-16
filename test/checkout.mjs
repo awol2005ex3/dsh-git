@@ -80,8 +80,21 @@ async function call(endpoint, args) {
 
 const pluginCode = (res) => (res && res.error && res.error.details ? res.error.details.code : null);
 
-/** The current branch name, or `HEAD` when detached — read from git itself. */
-const currentBranch = async (repo) => (await git(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+/**
+ * The current branch name, or `HEAD` when detached — read the way the host reads
+ * it (`status --porcelain=v2 --branch`).
+ *
+ * Deliberately not `rev-parse --abbrev-ref HEAD`: for a local branch that shares
+ * its name with a remote-tracking ref, that command answers `heads/origin/main`
+ * while git everywhere else (`branch --show-current`, porcelain v2) says
+ * `origin/main` — and the second form is what the host reports to the panel.
+ */
+const currentBranch = async (repo) => {
+  const out = await git(repo, ["status", "--porcelain=v2", "--branch"]);
+  const line = out.split(/\r?\n/).find((entry) => entry.startsWith("# branch.head "));
+  const head = line === undefined ? "" : line.slice("# branch.head ".length).trim();
+  return head === "(detached)" || head === "" ? "HEAD" : head;
+};
 
 // ── fixture: one `origin`, one `upstream`, both carrying `main` ──────────────
 // The second remote is faked with a local bare repository: the point is that two
@@ -247,6 +260,22 @@ try {
     check("re-selecting the tracked remote ref switches to the local branch", res.ok === true, JSON.stringify(res));
     check("re-selecting it does not detach", (await currentBranch(repo)) === "main", await currentBranch(repo));
     check("re-selecting it lands on origin/main's commit", (await git(repo, ["rev-parse", "HEAD"])).trim() === originMain);
+  }
+
+  // ── a local branch literally named like a remote-tracking ref ─────────────
+  // The switcher sends a bare name for local picks, so this branch arrives on the
+  // wire exactly like the remote ref it shadows. git's own DWIM resolves such a
+  // name to the local branch (with a "refname is ambiguous" warning), and the
+  // host must do the same — treating it as the remote ref would make the branch
+  // unreachable from the panel entirely.
+  {
+    await git(repo, ["branch", "origin/main"]);
+    const res = await call("checkout", { cwd: repo, branch: "origin/main" });
+    check("a local branch named like a remote ref still checks out", res.ok === true, JSON.stringify(res));
+    check("it is checked out as the local branch", (await currentBranch(repo)) === "origin/main", await currentBranch(repo));
+    check("it does not detach", (await git(repo, ["symbolic-ref", "--quiet", "HEAD"])).trim() === "refs/heads/origin/main");
+    await git(repo, ["switch", "--quiet", "main"]);
+    await git(repo, ["branch", "--quiet", "-D", "origin/main"]);
   }
 
   // ── the fetch path keeps working with a second remote ─────────────────────
