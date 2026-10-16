@@ -27,7 +27,8 @@
 | `test/render.mjs` | 双界面真实 React SSR：两个座位、提交区控件、diff 解析器与行渲染、`act()` 回传 | 需要 `react`/`react-dom`，见 §5 |
 | `test/diff.mjs` | **端到端**：真临时仓库跑 `diff` 端点（两侧、未跟踪文件/目录、重命名配对、删除、二进制、截断、校验） | 需要 spawn git，不在 `npm test` 内 |
 | `test/commit.mjs` | **端到端**：真临时仓库走 `commit` 端点，用 `git log --format=%B` 逐字节比对 | 同上 |
-| `test/ui/*.mjs` | 浏览器脚本（playwright-core + 本机 Chrome）：`verify-diff.mjs` 打真实 GUI 回归差异面板；`verify-settings.mjs` 自己起本地 http 服务、离线喂真实 React UMD + 真 `localStorage` 驱动设置弹层与语言（无需认证），并落 `test/ui/settings-popover.png` | `verify-diff.mjs` 需要认证 URL，见 §8；`verify-settings.mjs` 不需要 |
+| `test/checkout.mjs` | **端到端**：两个 remote 同名分支时的 `branches` 远端项形状（完整 ref + 分支部分，每 remote 的 `HEAD` 符号引用必须被滤掉）+ `checkout` 的三种到达形态（远端 ref→跟踪切换、同名且跟踪别的 remote→`checkout-remote-conflict` 且 HEAD 不动、同名但没跟踪→同样拒绝） | 同上 |
+| `test/ui/*.mjs` | 浏览器脚本（playwright-core + 本机 Chrome）：`verify-diff.mjs` 打真实 GUI 回归差异面板；`verify-settings.mjs` 自己起本地 http 服务、离线喂真实 React UMD + 真 `localStorage` 驱动设置弹层与语言（无需认证），并落 `test/ui/settings-popover.png`；`verify-branches.mjs` 同样离线，真浏览器里读分支切换器的 `<option>` 列表（两个 remote 的同名分支必须仍可区分），并落 `test/ui/select-open.png` | `verify-diff.mjs` 需要认证 URL，见 §8；`verify-settings.mjs` / `verify-branches.mjs` 不需要 |
 | `COMPAT.md` | 宿主版本兼容性笔记：每条按「症状 → 证据 → 根因 → 修法 → 守护测试」记，外加换版后的排查顺序 | 换版/静默失效时先读它；版本故事只写这里 |
 | `.github/workflows/publish.yml` | 唯一一条 CI：推 `vX.Y.Z` tag → 校验 tag 与 `package.json` 一致 → `npm test` → `npm publish --provenance`（OIDC trusted publishing；没登记时用 `NPM_TOKEN` secret） | 不装依赖、不打包（§3.1）；认证的一次性配置见 §7 |
 
@@ -38,11 +39,13 @@ npm test                  # smoke → host-mount → slot-mount → generate →
 node test/smoke.mjs       # 单独跑；改任何文件后最快的门禁
 npm run test:diff         # 端到端 diff（必须能 spawn git，见 §8）
 npm run test:commit       # 端到端 commit
+npm run test:checkout     # 端到端 checkout（远端同名分支、跟踪切换、冲突拒绝）
 $env:DSH_GIT_REACT_ROOT = "<含 react 与 react-dom 的 node_modules>"   # render 测试前置
 node test/render.mjs
 node test/ui/verify-diff.mjs            # 默认整条 /dsh-git-rpc 夹具化，验证客户端半边（自关首启弹层）
 $env:DSH_GIT_UI_LIVE = "1"; node test/ui/verify-diff.mjs   # 打真端点（会话所在仓库必须有未提交改动）
 node test/ui/verify-settings.mjs        # 离线：真 Chrome + 真 React + 真 localStorage 点设置弹层（不需认证）
+node test/ui/verify-branches.mjs        # 离线：真 Chrome 读分支切换器的选项列表（两个 remote 同名分支要可区分）
 ```
 
 `host-mount` / `slot-mount` 的宿主根由 `test/host-root.mjs` 解析。本机是 **desktop 版**时，它先把
@@ -184,8 +187,12 @@ node test/ui/verify-settings.mjs        # 离线：真 Chrome + 真 React + 真 
   （Gitee 甚至先发一个截断的 `ESC[0`），DOM 里没有字形可渲染，只剩 `[0[01;33m` 这种参数当正文显示。
   只剥 `value.message` / `error.message`，**diff body 与路径一律不动**（内容必须逐字节保真）。
 - `exports.__internals` 是**给 `test/render.mjs` 的测试出口**（解析器、行渲染、`GitDiffPane`、`DIFF_ROW`、
-  `stripAnsiEscapes`、`outputView`、`settingsView`、`LANGUAGE_PRESETS`、`sectionView`、`changeTagStyle`、
-  `panelBoxStyle`、`DIFF_PANEL_HEIGHT`、`sessionModelRoute`）。SSR 不跑 effect，所以面板自己的读取无法用静态渲染驱动，只能这样测；运行时不要用它。
+  `stripAnsiEscapes`、`outputView`、`branchOptions`/`baseOptions`、`checkoutResult`、`settingsView`、
+  `LANGUAGE_PRESETS`、`sectionView`、`changeTagStyle`、`panelBoxStyle`、`DIFF_PANEL_HEIGHT`、`sessionModelRoute`）。
+  SSR 不跑 effect（也点不动 `<option>`），所以面板自己的读取与选项列表无法用静态渲染驱动，只能这样测；运行时不要用它。
+- **`branchOptions` 的远端项给的是完整远程跟踪 ref**（`value` 与标签都是 `origin/main`）：多个 remote 常有同名
+  分支，只给短名会让两个选项都显示成 `main`，界面上分不出是哪一个。本地项仍是纯分支名（那才是切换器要预选的值）。
+  `baseOptions`（新建分支的基分支）一直就是完整 ref，两者**必须一致**——别再改回短名。
 - **提交信息语言是用户偏好，不是会话状态**：`generateLanguage`/`generateLanguageText` 由 store 持有并写进
   `localStorage`（键 `dsh-git.commitLanguage`，通过 `window.localStorage` 访问，Node 的实验性全局会刷警告），
   `idleState()` 每次重建状态时从闭包变量重新发布——在 `idleState()` 里写死 `auto` 会让任何一次 `status`
@@ -212,7 +219,7 @@ node test/ui/verify-settings.mjs        # 离线：真 Chrome + 真 React + 真 
   两个守护**空转了一整轮**（`COMPAT.md` §5.4 记的是同类事故的第二次：第一次是 `slots` 版本探测被捆进 `try`）。
   反证配方（都已实测）：`DSH_HOME=<空目录> DSH_ASAR=<不存在的路径>` → SKIP+0；`DSH_GIT_DSH_ROOT=<空目录>`
   → SKIP+0；`DSH_ASAR=<一个非 asar 文件>` → FAIL+1。
-- **必须 spawn git 的**（`test/diff.mjs` / `test/commit.mjs`）单独成文件并加 `npm run test:xxx`，
+- **必须 spawn git 的**（`test/diff.mjs` / `test/commit.mjs` / `test/checkout.mjs`）单独成文件并加 `npm run test:xxx`，
   不要塞进 `npm test`——沙箱里子进程管道 stdio 会 EPERM（见 §8）。
 - `test/render.mjs` 需要一份真实 `react`/`react-dom`，解析顺序：`DSH_GIT_REACT_ROOT` → `$DSH_HOME/profiles/web/node_modules`
   → `$DSH_HOME/profiles/node_modules` → 一个 npx 缓存路径 → 常规 node 解析；全都没有时**打印 SKIP 并退 0**（不要改成失败）。
@@ -223,6 +230,11 @@ node test/ui/verify-settings.mjs        # 离线：真 Chrome + 真 React + 真 
   `DSH_GIT_UI_WORKSPACE` 选工作区（只有 CLI/web shell 有那个选择器），`DSH_GIT_UI_URL`/`DSH_GIT_UI_STORAGE_STATE` 过认证。
   `test/ui/verify-settings.mjs`（`npm run test:ui:settings`）既不需要 dsh web 也不需要认证：它自己起回环 http 服务，
   用 React UMD 把客户端半边挂进真 Chrome，于是纯客户端交互（弹层开关、select、`localStorage`、请求载荷）可以真点。
+  `test/ui/verify-branches.mjs` 用的是同一套离线支架（同样无需认证），只是把夹具换成**两个 remote 各有一个同名
+  `main`** 并去读切换器的 `<option>` 列表——受控 select 的选项列表 SSR 读不到、`__internals` 也只测得到纯函数，
+  所以"两个 `origin/main` / `upstream/main` 不能再显示成同一个 `main`"这条只能在真浏览器里断言。它俩都靠
+  `/node_modules/react/umd/*` 提供 React，**需要先在仓库根 `npm install --no-save react@18 react-dom@18 playwright-core`**；
+  `DSH_GIT_UI_CHROME` 指另一个浏览器（本机没有系统 Chrome 时脚本会回落到 ms-playwright 自带的 chromium）。
 - 测 git 行为要**真起 git**：临时仓库、`core.autocrlf=false`、`mkdtemp` + `finally rm`。重命名这类事只有真 git
   能暴露（只给新路径的 pathspec 会退化成整文件新增），别用 mock 假装。
 - **门禁是跨平台的，CI 跑 `ubuntu-latest`**：`test/smoke.mjs` 里的 `cwd` 一律用 `join(tmpdir(), …)` 造绝对路径
@@ -244,8 +256,8 @@ node test/ui/verify-settings.mjs        # 离线：真 Chrome + 真 React + 真 
 
 ## 7. 发版流程
 
-1. 改 `package.json` 的版本号（当前 0.7.1）。
-2. 跑全部门禁：`npm test` + `npm run test:diff` + `npm run test:commit`。
+1. 改 `package.json` 的版本号（当前 0.7.2）。
+2. 跑全部门禁：`npm test` + `npm run test:diff` + `npm run test:commit` + `npm run test:checkout`。
 3. 提交：中文一行主题 + 分节正文，沿用既有前缀（`feat:` / `fix:` / `docs:` / `chore:`）。正文按
    「宿主半 / 浏览器半 / 测试 / 界面文案」分节写清改了什么与为什么。
 4. `git push origin master`。
